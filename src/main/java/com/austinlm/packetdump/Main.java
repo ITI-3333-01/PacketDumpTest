@@ -182,10 +182,11 @@ public class Main implements Callable<Void> {
     this.doLoop = false;
 
     try {
-      // Have to get a new logger here since the main one has already been disposed.
-      Logger shutdown = getLogger("Shutdown");
       logger.info("Shouting down...");
       Thread.sleep(400);
+
+      // Have to get a new logger here since the main one has already been disposed.
+      Logger shutdown = getLogger("Shutdown");
 
       // Some useful stats for fun
       PcapStat stats = handle.getStats();

@@ -25,17 +25,22 @@ public class PacketUtils {
     IpV4Header header = packet.get(IpV4Packet.class).getHeader();
     TcpHeader tcpHeader = packet.get(TcpPacket.class).getHeader();
 
+    pak.append("Packet: \n  Source: ");
     pak.append(header.getSrcAddr());
     if (port) {
-      pak.append(" : ");
-      pak.append(tcpHeader.getSrcPort());
+      pak.append(":");
+      pak.append(tcpHeader.getSrcPort().valueAsInt());
     }
-    pak.append(" > ");
+    pak.append("\n  Destination: ");
     pak.append(header.getDstAddr());
     if (port) {
-      pak.append(" : ");
-      pak.append(tcpHeader.getDstPort());
+      pak.append(":");
+      pak.append(tcpHeader.getDstPort().valueAsInt());
     }
+    pak.append("\n  Packet Size (bytes): ");
+    pak.append(packet.length());
+    pak.append("\n  Payload Size (bytes): ");
+    pak.append(packet.getPayload().length());
     pak.append("\n");
 
     return pak.toString();
