@@ -119,7 +119,7 @@ public class Main implements Callable<Void> {
       try {
         Packet packet = handle.getNextPacketEx();
         if (packet.contains(IpV4Packet.class)) {
-          writer.write(formatPacket(packet));
+          writer.write(formatPacket(packet, true));
         }
       } catch (TimeoutException ignored) { // Ignore timeouts for now
       } catch (EOFException e) {
@@ -184,7 +184,7 @@ public class Main implements Callable<Void> {
     try {
       // Have to get a new logger here since the main one has already been disposed.
       Logger shutdown = getLogger("Shutdown");
-      logger.info("Shouting down ...");
+      logger.info("Shouting down...");
       Thread.sleep(400);
 
       // Some useful stats for fun
