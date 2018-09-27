@@ -14,6 +14,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.logging.Logger;
 import org.pcap4j.core.BpfProgram.BpfCompileMode;
 import org.pcap4j.core.PcapHandle;
+import org.pcap4j.core.PcapHandle.Builder;
 import org.pcap4j.core.PcapNetworkInterface;
 import org.pcap4j.core.PcapNetworkInterface.PromiscuousMode;
 import org.pcap4j.core.PcapStat;
@@ -99,7 +100,9 @@ public class Main implements Callable<Void> {
     // Open the device and get a handle
     int snapshotLength = 65536; // bytes
     int readTimeout = 50; // mills
-    handle = device.openLive(snapshotLength, PromiscuousMode.PROMISCUOUS, readTimeout);
+    PcapHandle.Builder builder = new Builder(device.getName());
+    builder.bufferSize(1000000000).promiscuousMode(PromiscuousMode.PROMISCUOUS).timeoutMillis(readTimeout).snaplen(snapshotLength);
+    handle = builder.build();
 
     // Filter only 443 packets using ipv4 in the tcp scope
     String filter = "tcp port 443 and ip proto \\tcp";
@@ -119,7 +122,8 @@ public class Main implements Callable<Void> {
       try {
         Packet packet = handle.getNextPacketEx();
         if (packet.contains(IpV4Packet.class)) {
-          writer.write(formatPacket(packet, true));
+          logger.info(formatPacket(packet, true));
+          // writer.write(formatPacket(packet, true));
         }
       } catch (TimeoutException ignored) { // Ignore timeouts for now
       } catch (EOFException e) {
@@ -182,7 +186,7 @@ public class Main implements Callable<Void> {
     this.doLoop = false;
 
     try {
-      logger.info("Shouting down...");
+      logger.info("Shutting down...");
       Thread.sleep(400);
 
       // Have to get a new logger here since the main one has already been disposed.
