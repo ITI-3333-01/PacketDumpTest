@@ -1,15 +1,13 @@
 package com.austinlm.packetdump;
 
 import static com.austinlm.packetdump.util.Logging.getLogger;
-import static com.austinlm.packetdump.util.PacketUtils.formatPacket;
 
-import java.io.BufferedWriter;
+import com.austinlm.packetdump.util.FileUtils;
+import com.austinlm.packetdump.util.StatsUtils;
 import java.io.EOFException;
 import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
 import java.net.Inet4Address;
-import java.util.Date;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -19,7 +17,6 @@ import java.util.logging.Logger;
 import org.pcap4j.core.BpfProgram.BpfCompileMode;
 import org.pcap4j.core.PcapHandle;
 import org.pcap4j.core.PcapHandle.Builder;
-import org.pcap4j.core.PcapIpV4Address;
 import org.pcap4j.core.PcapNetworkInterface;
 import org.pcap4j.core.PcapNetworkInterface.PromiscuousMode;
 import org.pcap4j.core.PcapStat;
@@ -34,26 +31,30 @@ import picocli.CommandLine.Option;
  * Main class
  *
  * @author austinlm
+ *
+ * TODO: Sort list New file for each dump (timestamped)
  */
 public class Main implements Callable<Void> {
 
   /**
-   * File header
-   */
-  private static String[] HEADER = new String[]{
-      "# Packet Dump Utility by Austin Mayes\n",
-      "# Created for the 2018-19 IT FLARE project\n",
-      "# Started on " + new Date().toString() + "\n"
-  };
-  /**
    * Console logging
    */
-  private final Logger logger = getLogger("Main");
+  public static final Logger logger = getLogger("Main");
+  /**
+   * Map of source IP -> total packet length in current stats frame
+   */
+  private final Map<Inet4Address, AtomicInteger> ipTraffic = new HashMap<>();
+  /**
+   * When the current packet stat dump frame was started.
+   */
+  private Instant start = Instant.now();
   /**
    * Output file path
    */
-  @Option(names = {"-o", "--out"}, required = true)
+  @Option(names = {"-o",
+      "--out"}, description = "File to print data to. If no file is chosen, data will be printed to console.")
   private String outPath;
+  private File outDir;
   /**
    * Name of interface selected
    */
@@ -62,8 +63,27 @@ public class Main implements Callable<Void> {
   /**
    * If an interface selection screen should be displayed
    */
-  @Option(names = {"-c", "--choose-interface"}, description = "Pick an interface from a list")
-  private boolean chooseInterface = false;
+  @Option(names = {"-c",
+      "--choose-interface"}, description = "Pick an interface from a list", defaultValue = "false")
+  private boolean chooseInterface;
+  /**
+   * PCAP buffer size
+   */
+  @Option(names = {"-b",
+      "--buffer-size"}, description = "The PCAP buffer size to use.", defaultValue = "2097152")
+  private int bufferSize;
+  /**
+   * PCAP filter
+   */
+  @Option(names = {"-f",
+      "--filter"}, description = "The PCAP filter to use.", defaultValue = "tcp port 443 and ip proto \\tcp")
+  private String filter;
+  /**
+   * Time (in seconds) before a new stats dump is created
+   */
+  @Option(names = {"-w",
+      "--stats-window"}, description = "Time (in seconds) before a new stats dump is created.", defaultValue = "60")
+  private int statsWindow;
   /**
    * Set to false by a shutdown handler which ends the main packet loop.
    */
@@ -72,8 +92,6 @@ public class Main implements Callable<Void> {
    * Handler for incoming packets.
    */
   private PcapHandle handle;
-
-  private final Map<Inet4Address, AtomicInteger> ipTraffic = new HashMap<>();
 
   public static void main(String[] args) throws Exception {
     // Parse args (see above @Option s)
@@ -86,20 +104,20 @@ public class Main implements Callable<Void> {
     // Safety check for incompetent people
     if (interfaceName == null && !chooseInterface) {
       logger.severe("Interface name not supplied and choose option disabled!");
-      System.exit(0);
+      System.exit(1);
     }
 
     // Determine the interface
     PcapNetworkInterface device = getNetworkDevice();
-    logger.info("You chose: " + device);
 
     if (device == null) {
-      logger.severe("No device chosen.");
+      logger.severe("No device chosen!");
       System.exit(1);
     }
 
-    // Create writer using supplied path
-    BufferedWriter writer = setupFile();
+    logger.info("You chose: " + device.getName());
+
+    outDir = FileUtils.checkFile(this.outPath);
 
     // Run this when the process is terminated.
     Runtime.getRuntime().addShutdownHook(new Thread(this::finish));
@@ -108,81 +126,37 @@ public class Main implements Callable<Void> {
     int snapshotLength = 65536; // bytes
     int readTimeout = 50; // mills
     PcapHandle.Builder builder = new Builder(device.getName());
-    builder.bufferSize(1000000000).promiscuousMode(PromiscuousMode.PROMISCUOUS).timeoutMillis(readTimeout).snaplen(snapshotLength);
+    builder.bufferSize(bufferSize).promiscuousMode(PromiscuousMode.PROMISCUOUS)
+        .timeoutMillis(readTimeout).snaplen(snapshotLength);
     handle = builder.build();
 
-    // Filter only 443 packets using ipv4 in the tcp scope
-    String filter = "tcp port 443 and ip proto \\tcp";
     handle.setFilter(filter, BpfCompileMode.OPTIMIZE);
-
-    // Write my nice header
-    for (String s : HEADER) {
-      writer.write(s);
-    }
-    // Add some blank space
-    for (int i = 0; i < 4; i++) {
-      writer.write("\n");
-    }
 
     // Main packet write loop
     while (doLoop) {
+      // Dump stats if now minus the window is greater than the start.
+      // This is spun off on it's own thread since dumping could take a while (depending on number of packets)
+      if (Instant.now().minusSeconds(statsWindow).isAfter(start)) {
+        Instant finalStart = start;
+        new Thread(() -> StatsUtils
+            .dumpStats(finalStart, new HashMap<>(this.ipTraffic), this.outDir, this.statsWindow,
+                logger)).run();
+        this.ipTraffic.clear();
+        start = Instant.now();
+      }
+
       try {
         Packet packet = handle.getNextPacketEx();
         if (packet.contains(IpV4Packet.class)) {
-          // logger.info(formatPacket(packet, true));
           Inet4Address addr = packet.get(IpV4Packet.class).getHeader().getDstAddr();
           this.ipTraffic.putIfAbsent(addr, new AtomicInteger());
           this.ipTraffic.get(addr).addAndGet(packet.getHeader().length());
-          writer.write(formatPacket(packet, true));
         }
       } catch (TimeoutException ignored) { // Ignore timeouts for now
       } catch (EOFException e) {
         // Print a trace, but keep going on with life since these are rare.
         e.printStackTrace();
       }
-    }
-
-    // Close the file writer
-    // Can't close the packet handler here since it's needed for stats
-    writer.close();
-
-    return null;
-  }
-
-  /**
-   * Construct a {@link BufferedWriter} using a file path.
-   *
-   * If the file already exists, the writter will be in append mode.
-   *
-   * If the file does not exist, it will be created and opened.
-   *
-   * @return writer for the specified path
-   */
-  private BufferedWriter setupFile() {
-    File file = new File(outPath);
-    if (file.exists()) {
-      logger.info("File already exists... appending");
-      try {
-        return new BufferedWriter(new FileWriter(file, true));
-      } catch (IOException e) {
-        e.printStackTrace();
-        System.exit(1);
-      }
-    } else {
-      try {
-        file.createNewFile();
-        logger.info("Created file at " + file.getAbsolutePath());
-      } catch (IOException e) {
-        logger.severe("Failed to create file!");
-        e.printStackTrace();
-        System.exit(1);
-      }
-    }
-    try {
-      return new BufferedWriter(new FileWriter(file));
-    } catch (IOException e) {
-      e.printStackTrace();
-      System.exit(1);
     }
 
     return null;
@@ -208,12 +182,7 @@ public class Main implements Callable<Void> {
       shutdown.info("Packets dropped: " + stats.getNumPacketsDropped());
       shutdown.info("Packets dropped by interface: " + stats.getNumPacketsDroppedByIf());
 
-      shutdown.info("By source: ");
-      double total = this.ipTraffic.values().stream().mapToInt(AtomicInteger::get).sum();
-      this.ipTraffic.forEach((k, v) -> { shutdown.info(
-          k.getHostAddress() + ": " + v.get() + " (" + v.get() / total + "%)");
-      });
-
+      StatsUtils.dumpStats(this.start, this.ipTraffic, this.outDir, this.statsWindow, shutdown);
       // Have to do this after stats generation
       handle.close();
     } catch (Exception e) {
