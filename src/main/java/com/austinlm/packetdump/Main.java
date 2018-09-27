@@ -129,11 +129,11 @@ public class Main implements Callable<Void> {
       try {
         Packet packet = handle.getNextPacketEx();
         if (packet.contains(IpV4Packet.class)) {
-          logger.info(formatPacket(packet, true));
+          // logger.info(formatPacket(packet, true));
           Inet4Address addr = packet.get(IpV4Packet.class).getHeader().getDstAddr();
           this.ipTraffic.putIfAbsent(addr, new AtomicInteger());
           this.ipTraffic.get(addr).addAndGet(packet.getHeader().length());
-          // writer.write(formatPacket(packet, true));
+          writer.write(formatPacket(packet, true));
         }
       } catch (TimeoutException ignored) { // Ignore timeouts for now
       } catch (EOFException e) {
@@ -209,7 +209,10 @@ public class Main implements Callable<Void> {
       shutdown.info("Packets dropped by interface: " + stats.getNumPacketsDroppedByIf());
 
       shutdown.info("By source: ");
-      this.ipTraffic.forEach((k, v) -> shutdown.info(k.getHostAddress() + ": " + v.get()));
+      double total = this.ipTraffic.values().stream().mapToInt(AtomicInteger::get).sum();
+      this.ipTraffic.forEach((k, v) -> { shutdown.info(
+          k.getHostAddress() + ": " + v.get() + " (" + v.get() / total + "%)");
+      });
 
       // Have to do this after stats generation
       handle.close();
