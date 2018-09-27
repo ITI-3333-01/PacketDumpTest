@@ -8,13 +8,18 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.net.Inet4Address;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 import org.pcap4j.core.BpfProgram.BpfCompileMode;
 import org.pcap4j.core.PcapHandle;
 import org.pcap4j.core.PcapHandle.Builder;
+import org.pcap4j.core.PcapIpV4Address;
 import org.pcap4j.core.PcapNetworkInterface;
 import org.pcap4j.core.PcapNetworkInterface.PromiscuousMode;
 import org.pcap4j.core.PcapStat;
@@ -67,6 +72,8 @@ public class Main implements Callable<Void> {
    * Handler for incoming packets.
    */
   private PcapHandle handle;
+
+  private final Map<Inet4Address, AtomicInteger> ipTraffic = new HashMap<>();
 
   public static void main(String[] args) throws Exception {
     // Parse args (see above @Option s)
@@ -123,6 +130,9 @@ public class Main implements Callable<Void> {
         Packet packet = handle.getNextPacketEx();
         if (packet.contains(IpV4Packet.class)) {
           logger.info(formatPacket(packet, true));
+          Inet4Address addr = packet.get(IpV4Packet.class).getHeader().getDstAddr();
+          this.ipTraffic.putIfAbsent(addr, new AtomicInteger());
+          this.ipTraffic.get(addr).addAndGet(packet.getHeader().length());
           // writer.write(formatPacket(packet, true));
         }
       } catch (TimeoutException ignored) { // Ignore timeouts for now
@@ -197,6 +207,9 @@ public class Main implements Callable<Void> {
       shutdown.info("Packets received: " + stats.getNumPacketsReceived());
       shutdown.info("Packets dropped: " + stats.getNumPacketsDropped());
       shutdown.info("Packets dropped by interface: " + stats.getNumPacketsDroppedByIf());
+
+      shutdown.info("By source: ");
+      this.ipTraffic.forEach((k, v) -> shutdown.info(k.getHostAddress() + ": " + v.get()));
 
       // Have to do this after stats generation
       handle.close();
